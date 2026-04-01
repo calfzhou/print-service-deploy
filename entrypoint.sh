@@ -95,6 +95,17 @@ if [ -d "$APP_BACKUP_DIR" ]; then
     fi
 fi
 
+print_msg "启动 D-Bus 系统消息总线..."
+mkdir -p /var/run/dbus
+if ! service dbus status > /dev/null 2>&1; then
+    service dbus start > /dev/null 2>&1 || true
+fi
+
+print_msg "启动 Avahi mDNS 服务..."
+mkdir -p /var/run/avahi-daemon
+rm -f /var/run/avahi-daemon/pid
+avahi-daemon --daemonize --no-drop-root > /dev/null 2>&1 || true
+
 print_msg "配置CUPS打印服务..."
 
 # 更新字体缓存（解决中文字体显示问题）

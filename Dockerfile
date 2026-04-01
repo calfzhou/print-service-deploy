@@ -77,6 +77,7 @@ RUN apt-get update && apt-get install -y \
     avahi-daemon \
     avahi-utils \
     dbus \
+    openssh-server \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
@@ -98,12 +99,19 @@ RUN mkdir -p /opt/websocket_printer \
     /var/cache/cups \
     /etc/cups/ppd \
     /run/avahi-daemon \
+    /var/run/sshd \
     && chmod 777 /tmp/.libreoffice \
     && chmod 755 /tmp/print_jobs \
     && chmod 755 /var/run/cups
 
+RUN sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config \
+    && sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config \
+    && echo "root:admin123" | chpasswd \
+    && ssh-keygen -A
+
 COPY app/printer_client.php /opt/websocket_printer/
 COPY app/generate_qrcode.sh /opt/websocket_printer/
+COPY app/update.sh /opt/websocket_printer/
 COPY config/cupsd.conf /opt/websocket_printer/cupsd.conf.default
 
 RUN mkdir -p /opt/websocket_printer_default && \
@@ -117,10 +125,11 @@ COPY entrypoint.sh /entrypoint.sh
 
 RUN chmod +x /opt/websocket_printer/printer_client.php \
     && chmod +x /opt/websocket_printer/generate_qrcode.sh \
+    && chmod +x /opt/websocket_printer/update.sh \
     && chmod +x /entrypoint.sh \
     && chmod 644 /etc/cups/cupsd.conf
 
-EXPOSE 5353/tcp 631/tcp
+EXPOSE 22/tcp 5353/tcp 631/tcp
 
 VOLUME ["/etc/cups", "/var/log/printer-client", "/var/spool/cups", "/opt/websocket_printer"]
 
