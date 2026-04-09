@@ -568,7 +568,13 @@ function convertPdfToImages(string $pdfFile, string $tmpDir, string $paperSize, 
             'A5' => ['width' => 1748, 'height' => 2480],
             'A3' => ['width' => 3508, 'height' => 4961],
             'Letter' => ['width' => 2550, 'height' => 3300],
-            'Legal' => ['width' => 2550, 'height' => 4200]
+            'Legal' => ['width' => 2550, 'height' => 4200],
+            // 照片尺寸（300 DPI）
+            '3inch' => ['width' => 756,  'height' => 1051],  // 64x89mm
+            '4inch' => ['width' => 898,  'height' => 1205],  // 76x102mm
+            '5inch' => ['width' => 1051, 'height' => 1500],  // 89x127mm
+            '6inch' => ['width' => 1205, 'height' => 1795],  // 102x152mm
+            '7inch' => ['width' => 1500, 'height' => 2102],  // 127x178mm
         ];
         
         if (!isset($paperSizes[$paperSize])) {
@@ -1778,6 +1784,11 @@ function executePrint(string $printerName, string $fileContent, string $filename
             'content_size' => strlen($fileContent)
         ]);
     
+    // 将自定义纸张名称映射为CUPS识别的media名称（带打印机支持检测）
+    $originalPaperSize = $paperSize;
+    $paperSize = getCupsMediaName($paperSize, $printerName);
+    writeLog('INFO', "纸张映射", ['original' => $originalPaperSize, 'cups_media' => $paperSize]);
+    
     // 解析缩放模式：从orientation参数中提取（如 portrait_fit, portrait_none）
     $scaleMode = 'none'; // 默认不缩放
     if (strpos($orientation, '_fit') !== false) {
@@ -1786,7 +1797,10 @@ function executePrint(string $printerName, string $fileContent, string $filename
         $scaleMode = 'none';
     }
     
-    // 生成缩放选项
+    // 跟踪图片是否已经调整到目标尺寸
+    $imageResizedToTarget = false;
+    
+    // 生成缩放选项（如果图片已经调整到目标尺寸，则不使用fit-to-page）
     $scalingOption = ($scaleMode === 'fit') ? '-o fit-to-page' : '-o print-scaling=none';
     writeLog('INFO', "缩放模式设置", ['scale_mode' => $scaleMode, 'scaling_option' => $scalingOption]);
     
@@ -1823,7 +1837,7 @@ function executePrint(string $printerName, string $fileContent, string $filename
     $success = false;
     $output = [];
     
-    $lpOptions = buildLpOptions($colorMode, $orientation, $isDuplex, $paperSize);
+    $lpOptions = buildLpOptions($colorMode, $orientation, $isDuplex, $paperSize, $printerName);
     
     try {
         if ($ext === 'pdf') {
@@ -1840,12 +1854,12 @@ function executePrint(string $printerName, string $fileContent, string $filename
                 $pageTo = intval($pageTo ?? 999999);
                 writeLog('INFO', "PDF页码范围", ['page_from' => $pageFrom, 'page_to' => $pageTo]);
                 
-                $imageResult = convertPdfToImages($printPdf, $tmpDir, $paperSize, $orientation, $pageFrom, $pageTo);
+                $imageResult = convertPdfToImages($printPdf, $tmpDir, $originalPaperSize, $orientation, $pageFrom, $pageTo);
                 if ($imageResult['success'] && !empty($imageResult['images'])) {
-                    // 逐个打印图片
-                    $successCount = 0;
                     $totalImages = count($imageResult['images']);
                     
+                    // 处理图片颜色空间
+                    $processedImages = [];
                     foreach ($imageResult['images'] as $index => $imageFile) {
                         // 使用ImageMagick确保PNG颜色空间正确
                         $processedImg = $tmpDir . 'processed_' . basename($imageFile);
@@ -1856,44 +1870,104 @@ function executePrint(string $printerName, string $fileContent, string $filename
                         exec($convertCmd, $convertOutput, $convertRet);
                         
                         $printImg = ($convertRet === 0 && file_exists($processedImg)) ? $processedImg : $imageFile;
+                        $processedImages[] = $printImg;
                         
-                        $imgCmd = sprintf('lp -d %s -n %d %s -o media=%s -o job-hold-until=no-hold -o job-priority=50 -o page-delivery=same-order %s 2>&1',
-                            escapeshellarg($printerName),
-                            $copies,
-                            $lpOptions,
-                            escapeshellarg($paperSize),
-                            escapeshellarg($printImg)
-                        );
-                        
-                        writeLog('INFO', "打印PDF图片", [
+                        writeLog('DEBUG', "处理PDF图片", [
                             'page' => $pageFrom + $index, 
-                            'total' => $totalImages, 
-                            'image' => $printImg,
+                            'original' => $imageFile,
+                            'processed' => $printImg,
                             'color_processed' => ($printImg === $processedImg)
                         ]);
-                        exec($imgCmd, $imgOutput, $imgRet);
-                        
-                        // 清理处理后的图片
-                        if ($printImg === $processedImg && file_exists($processedImg)) {
-                            @unlink($processedImg);
-                        }
-                        
-                        if ($imgRet === 0) {
-                            $successCount++;
-                        } else {
-                            writeLog('ERROR', "PDF图片打印失败", [
-                                'page' => $pageFrom + $index,
-                                'ret' => $imgRet,
-                                'output' => implode('; ', array_slice($imgOutput, 0, 3))
-                            ]);
-                        }
-                        
-                        // 清理临时图片文件
-                        @unlink($imageFile);
                     }
                     
-                    $success = ($successCount === $totalImages);
-                    $message = $success ? "PDF图片打印成功 ({$successCount}/{$totalImages}页)" : "PDF图片打印失败 (成功{$successCount}/{$totalImages}页)";
+                    // 根据是否双面打印决定打印方式
+                    if ($isDuplex && $totalImages > 1) {
+                        // 双面打印：将图片转换为PDF再打印
+                        $pdfResult = convertImagesToPdf($processedImages, $paperSize, $orientation, $tmpDir);
+                        
+                        if ($pdfResult['success']) {
+                            // 使用PDF双面打印
+                            $imgCmd = sprintf('lp -d %s -n %d %s -o media=%s -o job-hold-until=no-hold -o job-priority=50 -o page-delivery=same-order %s 2>&1',
+                                escapeshellarg($printerName),
+                                $copies,
+                                $lpOptions,
+                                escapeshellarg($paperSize),
+                                escapeshellarg($pdfResult['pdf_file'])
+                            );
+                            
+                            writeLog('INFO', "PDF图片双面打印", [
+                                'total_images' => $totalImages, 
+                                'duplex' => true,
+                                'pdf_file' => $pdfResult['pdf_file'],
+                                'paper_size' => $paperSize,
+                                'orientation' => $orientation
+                            ]);
+                            
+                            exec($imgCmd, $imgOutput, $imgRet);
+                            $success = ($imgRet === 0);
+                            $message = $success ? "PDF图片双面打印成功 ({$totalImages}页)" : "PDF图片双面打印失败";
+                            
+                            if (!$success) {
+                                writeLog('ERROR', "PDF图片双面打印失败", [
+                                    'ret' => $imgRet,
+                                    'output' => implode('; ', array_slice($imgOutput, 0, 3))
+                                ]);
+                            }
+                            
+                            // 清理临时PDF文件
+                            @unlink($pdfResult['pdf_file']);
+                        } else {
+                            // PDF转换失败，回退到逐个打印
+                            writeLog('WARNING', "PDF转换失败，回退到逐个打印", [
+                                'error' => $pdfResult['message']
+                            ]);
+                            $success = false;
+                            $message = "PDF转换失败: " . $pdfResult['message'];
+                        }
+                    } else {
+                        // 单面打印或只有一张图片：逐个打印
+                        $successCount = 0;
+                        foreach ($processedImages as $index => $printImg) {
+                            $imgCmd = sprintf('lp -d %s -n %d %s -o media=%s -o job-hold-until=no-hold -o job-priority=50 -o page-delivery=same-order %s 2>&1',
+                                escapeshellarg($printerName),
+                                $copies,
+                                $lpOptions,
+                                escapeshellarg($paperSize),
+                                escapeshellarg($printImg)
+                            );
+                            
+                            writeLog('INFO', "打印PDF图片", [
+                                'page' => $pageFrom + $index, 
+                                'total' => $totalImages, 
+                                'image' => $printImg,
+                                'duplex' => $isDuplex
+                            ]);
+                            
+                            exec($imgCmd, $imgOutput, $imgRet);
+                            
+                            if ($imgRet === 0) {
+                                $successCount++;
+                            } else {
+                                writeLog('ERROR', "PDF图片打印失败", [
+                                    'page' => $pageFrom + $index,
+                                    'ret' => $imgRet,
+                                    'output' => implode('; ', array_slice($imgOutput, 0, 3))
+                                ]);
+                            }
+                        }
+                        
+                        $success = ($successCount === $totalImages);
+                        $message = $success ? "PDF图片打印成功 ({$successCount}/{$totalImages}页)" : "PDF图片打印失败 (成功{$successCount}/{$totalImages}页)";
+                    }
+                    
+                    // 清理处理后的图片和临时文件
+                    foreach ($imageResult['images'] as $index => $imageFile) {
+                        $processedImg = $tmpDir . 'processed_' . basename($imageFile);
+                        if (file_exists($processedImg)) {
+                            @unlink($processedImg);
+                        }
+                        @unlink($imageFile);
+                    }
                     
                     writeLog($success ? 'INFO' : 'ERROR', "PDF图片打印完成", [
                         'success' => $success,
@@ -2112,6 +2186,55 @@ function executePrint(string $printerName, string $fileContent, string $filename
                 }
             }
             
+            // 对于非A4纸张，调整图片到目标尺寸以确保正确打印
+            if ($originalPaperSize !== 'A4' && $originalPaperSize !== 'Letter' && $originalPaperSize !== 'A3') {
+                $targetDimensions = getPaperSizePixels($originalPaperSize, 300); // 300 DPI
+                if ($targetDimensions) {
+                    $resizedImg = $tmpDir . 'resized_' . uniqid() . '.' . ($colorMode === 'gray' ? 'png' : $ext);
+                    
+                    // 获取当前图片尺寸
+                    $currentInfo = @getimagesize($printFile);
+                    if ($currentInfo) {
+                        $currentWidth = $currentInfo[0];
+                        $currentHeight = $currentInfo[1];
+                        $targetWidth = $targetDimensions['width'];
+                        $targetHeight = $targetDimensions['height'];
+                        
+                        writeLog('INFO', "调整图片尺寸到目标纸张", [
+                            'current_size' => "{$currentWidth}x{$currentHeight}",
+                            'target_size' => "{$targetWidth}x{$targetHeight}",
+                            'paper_size' => $originalPaperSize
+                        ]);
+                        
+                        // 使用ImageMagick调整尺寸，保持宽高比
+                        $resizeCmd = sprintf('convert %s -resize %dx%d -gravity center -extent %dx%d -background white %s 2>&1',
+                            escapeshellarg($printFile),
+                            $targetWidth, $targetHeight,
+                            $targetWidth, $targetHeight,
+                            escapeshellarg($resizedImg)
+                        );
+                        exec($resizeCmd, $resizeOutput, $resizeRet);
+                        
+                        if ($resizeRet === 0 && file_exists($resizedImg)) {
+                            // 清理之前的临时文件
+                            if ($printFile !== $tmpFile && file_exists($printFile)) {
+                                @unlink($printFile);
+                            }
+                            $printFile = $resizedImg;
+                            $imageResizedToTarget = true; // 标记图片已调整到目标尺寸
+                            writeLog('INFO', "图片已调整到目标尺寸", [
+                                'resizedImg' => $resizedImg,
+                                'final_size' => "{$targetWidth}x{$targetHeight}"
+                            ]);
+                        } else {
+                            writeLog('WARNING', "图片尺寸调整失败，使用原图", [
+                                'output' => implode('; ', $resizeOutput)
+                            ]);
+                        }
+                    }
+                }
+            }
+            
             // 构建打印选项
             $imageOptions = [];
             if (strpos($orientation, 'landscape') !== false) {
@@ -2129,6 +2252,12 @@ function executePrint(string $printerName, string $fileContent, string $filename
             }
             // 黑白打印：不添加颜色参数，让打印机使用我们预处理的灰度图
             
+            // 双面打印选项
+            if ($isDuplex) {
+                $imageOptions[] = '-o sides=two-sided-long-edge';
+                writeLog('INFO', "图片打印启用双面打印");
+            }
+            
             // 降低墨粉浓度，防止打印过黑（仅黑白打印机）
             if ($isMonochromePrinter) {
                 $imageOptions[] = '-o TonerDensity=1';
@@ -2138,6 +2267,15 @@ function executePrint(string $printerName, string $fileContent, string $filename
             
             writeLog('DEBUG', "图片打印选项", ['options' => $imageOptionsStr]);
             
+            // 如果图片已经调整到目标尺寸，不使用fit-to-page避免二次缩放
+            if ($imageResizedToTarget) {
+                $scalingOption = '-o print-scaling=none';
+                writeLog('INFO', "图片已调整到目标尺寸，禁用fit-to-page", [
+                    'scaling_option' => $scalingOption,
+                    'target_paper' => $originalPaperSize
+                ]);
+            }
+            
             // 调试：记录最终打印文件信息
             $finalSize = filesize($printFile);
             $finalInfo = @getimagesize($printFile);
@@ -2146,7 +2284,7 @@ function executePrint(string $printerName, string $fileContent, string $filename
                 'size' => $finalSize,
                 'dimensions' => $finalInfo ? "{$finalInfo[0]}x{$finalInfo[1]}" : 'unknown',
                 'is_gray_converted' => ($printFile !== $tmpFile && strpos($printFile, 'gray_') !== false),
-                'is_rotated' => ($printFile !== $tmpFile && strpos($printFile, 'rotated_') !== false)
+                'is_resized_to_target' => $imageResizedToTarget
             ]);
             
             $cmd = sprintf('lp -d %s -n %d %s %s -o job-hold-until=no-hold -o job-priority=50 -o page-delivery=same-order %s 2>&1',
@@ -2362,12 +2500,12 @@ function executePrint(string $printerName, string $fileContent, string $filename
                     $pageTo = intval($pageTo ?? 999999);
                     writeLog('INFO', "文档页码范围", ['page_from' => $pageFrom, 'page_to' => $pageTo]);
                     
-                    $imageResult = convertPdfToImages($printPdf, $tmpDir, $paperSize, $orientation, $pageFrom, $pageTo);
+                    $imageResult = convertPdfToImages($printPdf, $tmpDir, $originalPaperSize, $orientation, $pageFrom, $pageTo);
                     if ($imageResult['success'] && !empty($imageResult['images'])) {
-                        // 逐个打印图片
-                        $successCount = 0;
                         $totalImages = count($imageResult['images']);
                         
+                        // 处理图片颜色空间
+                        $processedImages = [];
                         foreach ($imageResult['images'] as $index => $imageFile) {
                             // 使用ImageMagick确保PNG颜色空间正确
                             $processedImg = $tmpDir . 'processed_' . basename($imageFile);
@@ -2378,44 +2516,104 @@ function executePrint(string $printerName, string $fileContent, string $filename
                             exec($convertCmd, $convertOutput, $convertRet);
                             
                             $printImg = ($convertRet === 0 && file_exists($processedImg)) ? $processedImg : $imageFile;
+                            $processedImages[] = $printImg;
                             
-                            $imgCmd = sprintf('lp -d %s -n %d %s -o media=%s -o job-hold-until=no-hold -o job-priority=50 -o page-delivery=same-order %s 2>&1',
-                                escapeshellarg($printerName),
-                                $copies,
-                                $lpOptions,
-                                escapeshellarg($paperSize),
-                                escapeshellarg($printImg)
-                            );
-                            
-                            writeLog('INFO', "打印文档图片", [
+                            writeLog('DEBUG', "处理文档图片", [
                                 'page' => $pageFrom + $index, 
-                                'total' => $totalImages, 
-                                'image' => $printImg,
+                                'original' => $imageFile,
+                                'processed' => $printImg,
                                 'color_processed' => ($printImg === $processedImg)
                             ]);
-                            exec($imgCmd, $imgOutput, $imgRet);
-                            
-                            // 清理处理后的图片
-                            if ($printImg === $processedImg && file_exists($processedImg)) {
-                                @unlink($processedImg);
-                            }
-                            
-                            if ($imgRet === 0) {
-                                $successCount++;
-                            } else {
-                                writeLog('ERROR', "图片打印失败", [
-                                    'page' => $pageFrom + $index,
-                                    'ret' => $imgRet,
-                                    'output' => implode('; ', array_slice($imgOutput, 0, 3))
-                                ]);
-                            }
-                            
-                            // 清理临时图片文件
-                            @unlink($imageFile);
                         }
                         
-                        $success = ($successCount === $totalImages);
-                        $message = $success ? "文档图片打印成功 ({$successCount}/{$totalImages}页)" : "文档图片打印失败 (成功{$successCount}/{$totalImages}页)";
+                        // 根据是否双面打印决定打印方式
+                        if ($isDuplex && $totalImages > 1) {
+                            // 双面打印：将图片转换为PDF再打印
+                            $pdfResult = convertImagesToPdf($processedImages, $paperSize, $orientation, $tmpDir);
+                            
+                            if ($pdfResult['success']) {
+                                // 使用PDF双面打印
+                                $imgCmd = sprintf('lp -d %s -n %d %s -o media=%s -o job-hold-until=no-hold -o job-priority=50 -o page-delivery=same-order %s 2>&1',
+                                    escapeshellarg($printerName),
+                                    $copies,
+                                    $lpOptions,
+                                    escapeshellarg($paperSize),
+                                    escapeshellarg($pdfResult['pdf_file'])
+                                );
+                                
+                                writeLog('INFO', "文档图片双面打印", [
+                                    'total_images' => $totalImages, 
+                                    'duplex' => true,
+                                    'pdf_file' => $pdfResult['pdf_file'],
+                                    'paper_size' => $paperSize,
+                                    'orientation' => $orientation
+                                ]);
+                                
+                                exec($imgCmd, $imgOutput, $imgRet);
+                                $success = ($imgRet === 0);
+                                $message = $success ? "文档图片双面打印成功 ({$totalImages}页)" : "文档图片双面打印失败";
+                                
+                                if (!$success) {
+                                    writeLog('ERROR', "文档图片双面打印失败", [
+                                        'ret' => $imgRet,
+                                        'output' => implode('; ', array_slice($imgOutput, 0, 3))
+                                    ]);
+                                }
+                                
+                                // 清理临时PDF文件
+                                @unlink($pdfResult['pdf_file']);
+                            } else {
+                                // PDF转换失败，回退到逐个打印
+                                writeLog('WARNING', "PDF转换失败，回退到逐个打印", [
+                                    'error' => $pdfResult['message']
+                                ]);
+                                $success = false;
+                                $message = "PDF转换失败: " . $pdfResult['message'];
+                            }
+                        } else {
+                            // 单面打印或只有一张图片：逐个打印
+                            $successCount = 0;
+                            foreach ($processedImages as $index => $printImg) {
+                                $imgCmd = sprintf('lp -d %s -n %d %s -o media=%s -o job-hold-until=no-hold -o job-priority=50 -o page-delivery=same-order %s 2>&1',
+                                    escapeshellarg($printerName),
+                                    $copies,
+                                    $lpOptions,
+                                    escapeshellarg($paperSize),
+                                    escapeshellarg($printImg)
+                                );
+                                
+                                writeLog('INFO', "打印文档图片", [
+                                    'page' => $pageFrom + $index, 
+                                    'total' => $totalImages, 
+                                    'image' => $printImg,
+                                    'duplex' => $isDuplex
+                                ]);
+                                
+                                exec($imgCmd, $imgOutput, $imgRet);
+                                
+                                if ($imgRet === 0) {
+                                    $successCount++;
+                                } else {
+                                    writeLog('ERROR', "文档图片打印失败", [
+                                        'page' => $pageFrom + $index,
+                                        'ret' => $imgRet,
+                                        'output' => implode('; ', array_slice($imgOutput, 0, 3))
+                                    ]);
+                                }
+                            }
+                            
+                            $success = ($successCount === $totalImages);
+                            $message = $success ? "文档图片打印成功 ({$successCount}/{$totalImages}页)" : "文档图片打印失败 (成功{$successCount}/{$totalImages}页)";
+                        }
+                        
+                        // 清理处理后的图片和临时文件
+                        foreach ($imageResult['images'] as $index => $imageFile) {
+                            $processedImg = $tmpDir . 'processed_' . basename($imageFile);
+                            if (file_exists($processedImg)) {
+                                @unlink($processedImg);
+                            }
+                            @unlink($imageFile);
+                        }
                         
                         writeLog($success ? 'INFO' : 'ERROR', "文档图片打印完成", [
                             'success' => $success,
@@ -2614,7 +2812,253 @@ function executePrint(string $printerName, string $fileContent, string $filename
     }
 }
 
-function buildLpOptions($colorMode, $orientation, $isDuplex = false, $paperSize = 'A4'): string
+// 将自定义纸张名称映射为CUPS识别的media名称（带打印机支持检测）
+function getCupsMediaName($paperSize, $printerName = null): string
+{
+    $mediaMap = [
+        // 标准纸张 - CUPS原生支持
+        'A4'      => 'A4',
+        'A5'      => 'A5',
+        'A3'      => 'A3',
+        'Letter'  => 'Letter',
+        'Legal'   => 'Legal',
+        // 照片尺寸 - 尝试多种格式，从标准名称到Custom格式
+        '3inch'   => '3x5',                   // 先尝试标准名称
+        '4inch'   => '4x6',                   // 先尝试标准名称  
+        '5inch'   => '5x7',                   // 先尝试标准名称
+        '6inch'   => '6x8',                   // 先尝试标准名称
+        '7inch'   => '7x10',                  // 先尝试标准名称
+    ];
+    
+    // 如果标准名称不存在，返回自定义格式 - 尝试英寸格式
+    $customMap = [
+        '3inch'   => 'Custom.3.5x5in',     // 3R: 3.5x5 英寸
+        '4inch'   => 'Custom.4x6in',       // 4R: 4x6 英寸
+        '5inch'   => 'Custom.5x7in',       // 5R: 5x7 英寸
+        '6inch'   => 'Custom.6x8in',       // 6R: 6x8 英寸
+        '7inch'   => 'Custom.7x10in',      // 7R: 7x10 英寸
+    ];
+    
+    // 最后尝试毫米格式
+    $mmMap = [
+        '3inch'   => 'Custom.89x127mm',    // 3R: 3.5x5 英寸 = 89x127mm
+        '4inch'   => 'Custom.102x152mm',   // 4R: 4x6 英寸 = 102x152mm
+        '5inch'   => 'Custom.127x178mm',   // 5R: 5x7 英寸 = 127x178mm
+        '6inch'   => 'Custom.152x203mm',   // 6R: 6x8 英寸 = 152x203mm
+        '7inch'   => 'Custom.178x254mm',   // 7R: 7x10 英寸 = 178x254mm
+    ];
+    
+    // 获取所有可能的映射
+    $candidates = [
+        $mediaMap[$paperSize] ?? null,
+        $customMap[$paperSize] ?? null,
+        $mmMap[$paperSize] ?? null
+    ];
+    $candidates = array_filter($candidates);
+    
+    // 如果没有提供打印机名称，直接返回第一个候选
+    if (!$printerName) {
+        return $candidates[0] ?? $paperSize;
+    }
+    
+    // 获取打印机支持的尺寸
+    $supportedSizes = getPrinterMediaSizes($printerName);
+    
+    // 尝试找到支持的尺寸
+    foreach ($candidates as $candidate) {
+        if (in_array($candidate, $supportedSizes)) {
+            writeLog('INFO', "找到支持的媒体尺寸", [
+                'original' => $paperSize,
+                'selected' => $candidate,
+                'printer' => $printerName
+            ]);
+            return $candidate;
+        }
+    }
+    
+    // 如果都不支持，使用智能回退策略
+    $fallbackMap = [
+        '3inch' => 'A7',        // 3寸 → A7
+        '4inch' => 'Postcard',  // 4寸 → Postcard
+        '5inch' => 'A6',        // 5寸 → A6
+        '6inch' => 'A6',        // 6寸 → A6
+        '7inch' => 'B6',        // 7寸 → B6
+    ];
+    
+    $fallback = $fallbackMap[$paperSize] ?? 'A4';
+    
+    writeLog('WARN', "打印机不支持照片尺寸，使用回退尺寸", [
+        'original' => $paperSize,
+        'fallback' => $fallback,
+        'tried_candidates' => $candidates,
+        'supported_sizes' => $supportedSizes,
+        'printer' => $printerName
+    ]);
+    
+    return $fallback;
+}
+
+// 检查打印机支持的媒体尺寸
+function getPrinterMediaSizes($printerName): array {
+    $cmd = "lpoptions -p " . escapeshellarg($printerName) . " -l 2>/dev/null";
+    $output = shell_exec($cmd);
+    $supportedSizes = [];
+    
+    if ($output && preg_match('/PageSize\/Media Size:\s*(.+)/', $output, $matches)) {
+        $sizesStr = $matches[1];
+        // 解析支持的尺寸列表
+        $sizes = array_map('trim', explode(' ', $sizesStr));
+        foreach ($sizes as $size) {
+            // 移除*标记（表示默认）
+            $size = ltrim($size, '*');
+            if (!empty($size)) {
+                $supportedSizes[] = $size;
+                }
+        }
+    }
+    
+    writeLog('INFO', "解析打印机支持的媒体尺寸", [
+        'printer' => $printerName,
+        'supported_sizes' => $supportedSizes
+    ]);
+    
+    return $supportedSizes;
+}
+
+/**
+ * 将多张图片转换为PDF文件（用于双面打印）
+ * @param array $imageFiles 图片文件路径数组
+ * @param string $paperSize 纸张尺寸 (A4, A3, Letter等)
+ * @param string $orientation 打印方向 (portrait, landscape)
+ * @param string $tmpDir 临时目录
+ * @return array ['success' => bool, 'pdf_file' => string|null, 'message' => string]
+ */
+function convertImagesToPdf($imageFiles, $paperSize = 'A4', $orientation = 'portrait', $tmpDir = '/tmp/'): array
+{
+    if (empty($imageFiles)) {
+        return ['success' => false, 'pdf_file' => null, 'message' => '没有图片文件'];
+    }
+
+    // 获取纸张尺寸（毫米）
+    $dimensions = getPaperSizePixels($paperSize, 300);
+    if (!$dimensions) {
+        return ['success' => false, 'pdf_file' => null, 'message' => "不支持的纸张尺寸: {$paperSize}"];
+    }
+
+    // 根据方向调整尺寸
+    if ($orientation === 'landscape') {
+        $width = $dimensions['height'];
+        $height = $dimensions['width'];
+    } else {
+        $width = $dimensions['width'];
+        $height = $dimensions['height'];
+    }
+
+    // 生成临时PDF文件名
+    $pdfFile = $tmpDir . 'images_to_pdf_' . uniqid() . '.pdf';
+
+    // 构建ImageMagick转换命令
+    $imageList = implode(' ', array_map('escapeshellarg', $imageFiles));
+    
+    // 使用ImageMagick将图片转换为PDF
+    // -resize: 调整图片大小以适应页面
+    // -gravity center: 居中对齐
+    // -extent: 确保页面尺寸
+    // -units PixelsPerInch -density 300: 设置300 DPI
+    $convertCmd = sprintf(
+        'convert %s -units PixelsPerInch -density 300 -resize %dx%d -gravity center -extent %dx%d -quality 95 %s 2>&1',
+        $imageList,
+        $width, $height,
+        $width, $height,
+        escapeshellarg($pdfFile)
+    );
+
+    writeLog('INFO', "将图片转换为PDF", [
+        'image_count' => count($imageFiles),
+        'paper_size' => $paperSize,
+        'orientation' => $orientation,
+        'dimensions' => "{$width}x{$height}",
+        'pdf_file' => $pdfFile,
+        'command' => $convertCmd
+    ]);
+
+    exec($convertCmd, $output, $ret);
+
+    if ($ret === 0 && file_exists($pdfFile)) {
+        $fileSize = filesize($pdfFile);
+        writeLog('INFO', "图片转PDF成功", [
+            'pdf_file' => $pdfFile,
+            'file_size' => $fileSize,
+            'images_processed' => count($imageFiles)
+        ]);
+        
+        return [
+            'success' => true,
+            'pdf_file' => $pdfFile,
+            'message' => "成功将" . count($imageFiles) . "张图片转换为PDF"
+        ];
+    } else {
+        writeLog('ERROR', "图片转PDF失败", [
+            'ret_code' => $ret,
+            'output' => implode('; ', array_slice($output, 0, 3)),
+            'pdf_file' => $pdfFile
+        ]);
+        
+        return [
+            'success' => false,
+            'pdf_file' => null,
+            'message' => "图片转PDF失败: " . implode('; ', array_slice($output, 0, 3))
+        ];
+    }
+}
+
+// 获取纸张尺寸的像素值（基于DPI）
+function getPaperSizePixels($paperSize, $dpi = 300): ?array
+{
+    $standardSizes = [
+        // A系列
+        'A3'      => ['width' => 297,  'height' => 420],  // ISO A3: 297×420mm
+        'A4'      => ['width' => 210,  'height' => 297],  // ISO A4: 210×297mm
+        'A5'      => ['width' => 148,  'height' => 210],  // ISO A5: 148×210mm
+        'A6'      => ['width' => 105,  'height' => 148],  // ISO A6: 105×148mm
+        // B系列
+        'B4'      => ['width' => 250,  'height' => 353],  // ISO B4: 250×353mm
+        'B5'      => ['width' => 176,  'height' => 250],  // ISO B5: 176×250mm  
+        'B6'      => ['width' => 125,  'height' => 176],  // ISO B6: 125×176mm
+        // 美式标准
+        'Letter'  => ['width' => 216,  'height' => 279],  // Letter: 8.5×11in
+        'Legal'   => ['width' => 216,  'height' => 356],  // Legal: 8.5×14in
+        'Tabloid' => ['width' => 279,  'height' => 432],  // Tabloid: 11×17in
+        'Executive'=> ['width' => 184,  'height' => 267],  // Executive: 7.25×10.5in
+        'Folio'   => ['width' => 210,  'height' => 330],  // Folio: 8.3×13in
+        // 其他常用尺寸
+        'Postcard'=> ['width' => 100,  'height' => 148],  // Postcard: 100×148mm
+        'Envelope'=> ['width' => 110,  'height' => 220],  // Envelope: 110×220mm
+        'IndexCard'=>['width' => 76,   'height' => 127],  // Index Card: 76×127mm
+    ];
+    
+    // 如果不是300 DPI，按比例调整
+    if ($dpi !== 300 && isset($standardSizes[$paperSize])) {
+        $scale = $dpi / 300;
+        return [
+            'width' => intval($paperSizes[$paperSize]['width'] * $scale),
+            'height' => intval($paperSizes[$paperSize]['height'] * $scale)
+        ];
+    }
+    
+    return $paperSizes[$paperSize] ?? null;
+}
+
+// 检查打印机支持的媒体尺寸（用于调试）
+function logPrinterMediaSizes($printerName) {
+    $sizes = getPrinterMediaSizes($printerName);
+    writeLog('INFO', "打印机支持的媒体尺寸", [
+        'printer' => $printerName,
+        'media_options' => implode(', ', $sizes)
+    ]);
+}
+
+function buildLpOptions($colorMode, $orientation, $isDuplex = false, $paperSize = 'A4', $printerName = null): string
 {
     $options = [];
     
@@ -2638,8 +3082,9 @@ function buildLpOptions($colorMode, $orientation, $isDuplex = false, $paperSize 
         $options[] = '-o orientation-requested=3'; // 3 = portrait
     }
 
-    // 纸张大小选项 - 总是添加，确保覆盖默认设置
-    $options[] = '-o media=' . escapeshellarg($paperSize);
+    // 纸张大小选项 - 映射为CUPS识别的media名称（带打印机支持检测）
+    $cupsMedia = getCupsMediaName($paperSize, $printerName);
+    $options[] = '-o media=' . escapeshellarg($cupsMedia);
     
     return implode(' ', $options);
 }
@@ -2815,6 +3260,11 @@ class PrinterClient
     private $wsRecoveryCheckTime = 0;       // WebSocket恢复检查时间
     private $httpApiRegistered = false;     // HTTP API是否已注册
     
+    // 注册状态跟踪（防止zombie连接）
+    private $registrationConfirmed = false; // 服务器是否确认过注册
+    private $registrationTime = 0;          // 发送register的时间
+    private $reRegisterCooldown = 0;        // 避免重复重注册的冷却时间
+    
     public function __construct(string $serverUrl)
     {
         $this->serverUrl = $serverUrl;
@@ -2847,8 +3297,6 @@ class PrinterClient
             
             if (!$this->socket) {
                 writeLog('ERROR', "连接失败", [
-                    'host' => $host,
-                    'port' => $port,
                     'errno' => $errno,
                     'errstr' => $errstr
                 ]);
@@ -2920,6 +3368,10 @@ class PrinterClient
         $systemInfo = getSystemInfo();
         
         $openid = $this->loadOpenid();
+        
+        // 重置注册确认状态
+        $this->registrationConfirmed = false;
+        $this->registrationTime = time();
         
         $this->send([
             'action' => 'register',
@@ -3144,6 +3596,18 @@ class PrinterClient
         while (true) {
             $now = time();
             
+            // 注册超时检测：已连接且发送过register但服务器一直30秒未确认，重新注册
+            if ($this->connected && !$this->registrationConfirmed
+                && $this->registrationTime > 0
+                && ($now - $this->registrationTime) > 30
+                && ($now - $this->reRegisterCooldown) > 60
+            ) {
+                writeLog('WARN', '注册30秒未得到确认，自动重新注册');
+                echo "[注册超时] 重新发送register\n";
+                $this->reRegisterCooldown = $now;
+                $this->register();
+            }
+            
             // 检测WebSocket假死并切换到HTTP API模式
             if (!$this->httpApiMode && $this->connected) {
                 $timeSinceActivity = $now - $this->lastWsActivity;
@@ -3264,10 +3728,18 @@ class PrinterClient
         switch ($data['action'] ?? '') {
             case 'registered':
                 echo "设备注册成功\n";
+                $this->registrationConfirmed = true;
                 break;
             
             case 'register_ok':
                 echo "设备注册成功\n";
+                $this->registrationConfirmed = true;
+                break;
+            
+            case 're_register':
+                writeLog('WARN', '服务器要求重新注册，重新发送register', ['reason' => $data['reason'] ?? '']);
+                echo "[重新注册] 服务器要求重新注册\n";
+                $this->register();
                 break;
                 
             case 'bind':
