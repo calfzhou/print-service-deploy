@@ -2,7 +2,7 @@ FROM ubuntu:20.04
 
 LABEL maintainer="tzishue"
 LABEL description="Cloud-Printer - CUPS打印服务，支持所有文档格式"
-LABEL version="1.2.0"
+LABEL version="1.2.1"
 
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ=Asia/Shanghai \
@@ -19,12 +19,15 @@ RUN apt-get update && apt-get install -y \
     cups-pdf \
     cups-ppdc \
     cups-browsed \
+    printer-driver-all \
+    printer-driver-cups-pdf \
     printer-driver-gutenprint \
     printer-driver-splix \
     printer-driver-brlaser \
     printer-driver-escpr \
+    printer-driver-postscript-hp \
     printer-driver-hpijs \
-    hplip \
+    printer-driver-foo2zjs \
     printer-driver-ptouch \
     printer-driver-dymo \
     printer-driver-c2esp \
@@ -33,9 +36,11 @@ RUN apt-get update && apt-get install -y \
     printer-driver-pnm2ppa \
     printer-driver-m2300w \
     foomatic-db-engine \
+    foomatic-db-compressed-ppds \
     openprinting-ppds \
     hpijs-ppds \
-    foomatic-db \
+    hp-ppd \
+    hplip \
     php7.4-cli \
     php7.4-curl \
     php7.4-mbstring \
@@ -122,6 +127,16 @@ RUN mkdir -p /opt/websocket_printer_default && \
 COPY config/cupsd.conf /etc/cups/cupsd.conf
 COPY config/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 COPY entrypoint.sh /entrypoint.sh
+
+RUN mkdir -p /usr/share/cups/doc-root/default.en \
+    && mkdir -p /usr/share/cups/templates/default.en \
+    && cp -r /usr/share/cups/doc-root/* /usr/share/cups/doc-root/default.en/ 2>/dev/null || true \
+    && cp -r /usr/share/cups/templates/* /usr/share/cups/templates/default.en/ 2>/dev/null || true
+
+COPY Chinese_Language/doc-root /usr/share/cups/doc-root
+COPY Chinese_Language/templates /usr/share/cups/templates
+
+RUN echo "DefaultLanguage zh_CN" >> /etc/cups/cupsd.conf
 
 RUN chmod +x /opt/websocket_printer/printer_client.php \
     && chmod +x /opt/websocket_printer/generate_qrcode.sh \
