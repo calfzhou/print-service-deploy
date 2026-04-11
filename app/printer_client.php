@@ -1,6 +1,6 @@
 #!/usr/bin/env php
 <?php
-define('CLIENT_VERSION', '1.2.0');
+define('CLIENT_VERSION', '1.2.2');
 define('LOG_DIR', '/var/log/printer-client/');
 define('LOG_RETENTION_DAYS', 2);
 define('PRINT_TEMP_DIR', '/tmp/print_jobs/');

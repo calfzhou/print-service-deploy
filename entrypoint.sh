@@ -21,7 +21,7 @@ print_error() {
 
 print_header() {
     echo -e "\n${BLUE}========================================${NC}"
-    echo -e "${GREEN}  远程打印客户端 Docker 版 v1.2.1${NC}"
+    echo -e "${GREEN}  远程打印客户端 Docker 版 v1.2.2${NC}"
     echo -e "${BLUE}========================================${NC}\n"
 }
 
