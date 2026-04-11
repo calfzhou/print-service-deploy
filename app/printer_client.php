@@ -1,6 +1,6 @@
 #!/usr/bin/env php
 <?php
-define('CLIENT_VERSION', '1.2.0');
+define('CLIENT_VERSION', '1.2.2');
 define('LOG_DIR', '/var/log/printer-client/');
 define('LOG_RETENTION_DAYS', 2);
 define('PRINT_TEMP_DIR', '/tmp/print_jobs/');
@@ -2019,7 +2019,9 @@ function executePrint(string $printerName, string $fileContent, string $filename
             
             // 使用PWG光栅化打印
             $rasterResult = rasterizePdfForPrint($printerName, $printPdf, $tmpDir, [
-                '-o media=' . escapeshellarg($paperSize)
+                '-o media=' . escapeshellarg($paperSize),
+                ($colorMode === 'gray' ? '-o ColorModel=Gray' : '-o ColorModel=AdobeRGB'),
+                ($colorMode === 'gray' ? '' : '-o print-color-mode=color')
             ], $pageRange);
             
             if ($rasterResult['success']) {
@@ -2030,7 +2032,7 @@ function executePrint(string $printerName, string $fileContent, string $filename
                     (strpos($orientation, 'landscape') !== false) ? '4' : '3'
                 );
                 if ($colorMode === 'gray') {
-                    $rasterOptions .= ' -o ColorModel=Gray -o print-color-mode=monochrome';
+                    $rasterOptions .= ' -o ColorModel=Gray';
                 }
                 if ($isDuplex) {
                     $rasterOptions .= ' -o sides=two-sided-long-edge';
@@ -2673,7 +2675,9 @@ function executePrint(string $printerName, string $fileContent, string $filename
                 
                 // 使用PWG光栅化打印
                 $rasterResult = rasterizePdfForPrint($printerName, $printPdf, $tmpDir, [
-                    '-o media=' . escapeshellarg($paperSize)
+                    '-o media=' . escapeshellarg($paperSize),
+                    ($colorMode === 'gray' ? '-o ColorModel=Gray' : '-o ColorModel=AdobeRGB'),
+                    ($colorMode === 'gray' ? '' : '-o print-color-mode=color')
                 ], $pageRange);
                 
                 if ($rasterResult['success']) {
@@ -2684,7 +2688,7 @@ function executePrint(string $printerName, string $fileContent, string $filename
                         (strpos($orientation, 'landscape') !== false) ? '4' : '3'
                     );
                     if ($colorMode === 'gray') {
-                        $rasterOptions .= ' -o ColorModel=Gray -o print-color-mode=monochrome';
+                        $rasterOptions .= ' -o ColorModel=Gray';
                     }
                     if ($isDuplex) {
                         $rasterOptions .= ' -o sides=two-sided-long-edge';
@@ -3067,7 +3071,6 @@ function buildLpOptions($colorMode, $orientation, $isDuplex = false, $paperSize 
     
     if ($colorMode === 'gray') {
         $options[] = '-o ColorModel=Gray';
-        $options[] = '-o print-color-mode=monochrome';
     }
 
     // 双面打印选项

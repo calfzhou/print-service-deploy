@@ -2,7 +2,7 @@ FROM ubuntu:20.04
 
 LABEL maintainer="tzishue"
 LABEL description="Cloud-Printer - CUPS打印服务，支持所有文档格式"
-LABEL version="1.2.1"
+LABEL version="1.2.2"
 
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ=Asia/Shanghai \
