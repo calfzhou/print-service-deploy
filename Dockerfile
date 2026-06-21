@@ -2,7 +2,7 @@ FROM ubuntu:20.04
 
 LABEL maintainer="tzishue"
 LABEL description="Cloud-Printer - CUPS打印服务，支持所有文档格式"
-LABEL version="1.2.2"
+LABEL version="1.2.3"
 
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ=Asia/Shanghai \
@@ -28,13 +28,6 @@ RUN apt-get update && apt-get install -y \
     printer-driver-postscript-hp \
     printer-driver-hpijs \
     printer-driver-foo2zjs \
-    printer-driver-ptouch \
-    printer-driver-dymo \
-    printer-driver-c2esp \
-    printer-driver-pxljr \
-    printer-driver-min12xxw \
-    printer-driver-pnm2ppa \
-    printer-driver-m2300w \
     foomatic-db-engine \
     foomatic-db-compressed-ppds \
     openprinting-ppds \
@@ -50,6 +43,14 @@ RUN apt-get update && apt-get install -y \
     libreoffice-writer \
     libreoffice-calc \
     libreoffice-impress \
+    libreoffice-java-common \
+    libreoffice-gtk3 \
+    libxinerama1 \
+    libgl1-mesa-glx \
+    libglu1-mesa \
+    libxrender1 \
+    libxtst6 \
+    libxi6 \
     unoconv \
     texlive-extra-utils \
     ghostscript \
@@ -95,10 +96,14 @@ RUN ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
     && mkdir -p /usr/share/color/icc
 
 RUN mkdir -p /opt/websocket_printer \
+    /opt/websocket_printer/web_print \
+    /opt/websocket_printer/web_print/uploads \
     /var/log/printer-client \
     /var/log/supervisor \
     /tmp/print_jobs \
+    /tmp/web_print_uploads \
     /tmp/.libreoffice \
+    /tmp/.libreoffice_home \
     /var/run/cups \
     /var/spool/cups \
     /var/cache/cups \
@@ -106,8 +111,11 @@ RUN mkdir -p /opt/websocket_printer \
     /run/avahi-daemon \
     /var/run/sshd \
     && chmod 777 /tmp/.libreoffice \
+    && chmod 777 /tmp/.libreoffice_home \
+    && chmod 777 /tmp/web_print_uploads \
     && chmod 755 /tmp/print_jobs \
-    && chmod 755 /var/run/cups
+    && chmod 755 /var/run/cups \
+    && chmod 755 /opt/websocket_printer/web_print/uploads
 
 RUN sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config \
     && sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config \
@@ -118,6 +126,7 @@ COPY app/printer_client.php /opt/websocket_printer/
 COPY app/generate_qrcode.sh /opt/websocket_printer/
 COPY app/update.sh /opt/websocket_printer/
 COPY config/cupsd.conf /opt/websocket_printer/cupsd.conf.default
+COPY web_print/ /opt/websocket_printer/web_print/
 
 RUN mkdir -p /opt/websocket_printer_default && \
     cp /opt/websocket_printer/printer_client.php /opt/websocket_printer_default/ && \
@@ -141,10 +150,11 @@ RUN echo "DefaultLanguage zh_CN" >> /etc/cups/cupsd.conf
 RUN chmod +x /opt/websocket_printer/printer_client.php \
     && chmod +x /opt/websocket_printer/generate_qrcode.sh \
     && chmod +x /opt/websocket_printer/update.sh \
+    && chmod +x /opt/websocket_printer/web_print/start.sh \
     && chmod +x /entrypoint.sh \
     && chmod 644 /etc/cups/cupsd.conf
 
-EXPOSE 22/tcp 5353/tcp 631/tcp
+EXPOSE 22/tcp 5353/tcp 631/tcp 8080/tcp
 
 VOLUME ["/etc/cups", "/var/log/printer-client", "/var/spool/cups", "/opt/websocket_printer"]
 

@@ -21,7 +21,7 @@ print_error() {
 
 print_header() {
     echo -e "\n${BLUE}========================================${NC}"
-    echo -e "${GREEN}  远程打印客户端 Docker 版 v1.2.2${NC}"
+    echo -e "${GREEN}  远程打印客户端 Docker 版 v1.2.3${NC}"
     echo -e "${BLUE}========================================${NC}\n"
 }
 
@@ -343,6 +343,21 @@ fi
 if command -v libreoffice >/dev/null 2>&1; then
     LO_VERSION=$(libreoffice --version 2>/dev/null | head -n 1 || echo "未知版本")
     print_msg "LibreOffice: $LO_VERSION"
+    
+    # 配置LibreOffice运行环境
+    export HOME=/tmp/.libreoffice_home
+    export TMPDIR=/tmp
+    export USER=root
+    export DISPLAY=:99
+    
+    # 确保LibreOffice目录权限正确
+    mkdir -p /tmp/.libreoffice_home /tmp/.libreoffice
+    chmod 777 /tmp/.libreoffice_home /tmp/.libreoffice
+    
+    # 清理可能的锁文件
+    rm -f /tmp/.libreoffice_home/.~lock.* 2>/dev/null || true
+    
+    print_msg "LibreOffice环境已配置"
 else
     print_warn "LibreOffice未安装，文档转换功能将不可用"
 fi

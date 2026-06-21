@@ -1,7 +1,7 @@
 # Source image provenance — auto-generated, do not edit manually
-image: docker.io/tzishue/cloud-printer:latest
-id: 3b6204e5c3922a8fd313f69c888ea70008d929d26cccbcf85b9f151c04d95050
-digest: sha256:40d615f00858a031dadee7482a4acebf7ed185083423e6ce9d3322381a675d19
-created: 2026-04-09T21:32:44.171062705Z
-label_version: 1.2.2
-extracted_at: 2026-04-11T13:07:22Z
+image: docker.io/tzishue/cloud-printer:1.2.3
+id: 21ac6aaad33712a7d85179ebd53f3705cd606747abf21fa20ef02ec305748c15
+digest: sha256:a0c0cd56a8077b41ca7ee20d717b1fe9be70fc222fcc016dc5f411c3da82d12a
+created: 2026-05-03T03:29:41.316229754Z
+label_version: 1.2.3
+extracted_at: 2026-06-21T13:12:31Z

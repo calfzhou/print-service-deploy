@@ -1,6 +1,6 @@
 #!/usr/bin/env php
 <?php
-define('CLIENT_VERSION', '1.2.2');
+define('CLIENT_VERSION', '1.2.3');
 define('LOG_DIR', '/var/log/printer-client/');
 define('LOG_RETENTION_DAYS', 2);
 define('PRINT_TEMP_DIR', '/tmp/print_jobs/');
@@ -1236,6 +1236,13 @@ function getAvailableGenericDrivers(): array
 function upgradeClient(string $downloadUrl): array
 {
     echo "[upgradeClient] 开始升级客户端\n";
+    
+    // Docker版本不支持远程升级，需要通过重新部署镜像来升级
+    $isDocker = getenv('DOCKER_ENV') === '1' || file_exists('/.dockerenv');
+    if ($isDocker) {
+        echo "[upgradeClient] Docker环境不支持远程升级\n";
+        return ['success' => false, 'message' => 'Docker版本不支持远程升级，请通过重新部署镜像来升级'];
+    }
     
     $currentScript = realpath(__FILE__);
     $backupScript = $currentScript . '.backup';
@@ -2706,7 +2713,7 @@ function executePrint(string $printerName, string $fileContent, string $filename
                 } else {
                     writeLog('WARNING', "文档PDF光栅化失败，回退到直接PDF打印", ['error' => $rasterResult['error'] ?? '未知错误']);
                     // 文档转PDF后使用动态缩放选项打印（回退）
-                    $cmd = sprintf('lp -d %s -n %d%s %s %s %s %s -o job-hold-until=no-hold -o job-priority=50 -o page-delivery=same-order %s %s 2>&1',
+                    $cmd = sprintf('lp -d %s -n %d%s %s %s %s %s -o job-hold-until=no-hold -o job-priority=50 -o page-delivery=same-order %s 2>&1',
                         escapeshellarg($printerName),
                         $copies,
                         $pageOption,
